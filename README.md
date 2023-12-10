@@ -5,7 +5,7 @@ The REST API example implemented by Symfony
 ## Installation
 
 ```
-git clone https://github.com/kavw/sysio-api.git sysio-api
+git clone https://github.com/kavw/symfony-sysio-api.git sysio-api
 chmod u+x sysio-api/bin/run
 sysio-api/bin/run
 ```
