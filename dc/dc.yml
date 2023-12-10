@@ -1,0 +1,69 @@
+version: "3.9"
+
+services:
+  nginx-fpm:
+    build:
+      context: ..
+      dockerfile: docker/nginx/Dockerfile
+      args:
+        APP_ROOT_PATH: ${APP_DIR_MAP}/public
+        APP_FASTCGI_PASS: php-fpm
+    volumes:
+      - ${APP_DIR}:${APP_DIR_MAP}
+    env_file:
+      - .env
+    environment:
+      PS1_SRV_NAME: nginx-fpm
+    ports:
+      - ${HTTP_PORT_NGINX_FPM}:80
+    depends_on:
+      - php-fpm
+
+  php-fpm: &php-fpm
+    build: &php-fpm-build
+      context: ..
+      dockerfile: docker/php/Dockerfile
+      target: basic
+      args: &php-fpm-args
+        PHP_VER: ${PHP_VER}
+        PHP_SAPI: fpm
+        APP_USER: ${APP_USER}
+        APP_UID: ${APP_UID}
+        APP_GID: ${APP_GID}
+        APP_TIMEZONE: ${APP_TIMEZONE}
+    volumes:
+      - ${APP_DIR}:${APP_DIR_MAP}
+    working_dir: ${APP_DIR_MAP}
+    env_file:
+      - .env
+    environment:
+      PS1_SRV_NAME: php-fpm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+        - database
+
+  php-cli:
+    <<: *php-fpm
+    build:
+      <<: *php-fpm-build
+      target: basic
+      args:
+        <<: *php-fpm-args
+        PHP_SAPI: zts
+    environment:
+      PS1_SRV_NAME: php-zts
+
+  database:
+    image: postgres:${POSTGRES_VERSION:-15}-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xxx}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+    volumes:
+      - database_data:/var/lib/postgresql/data:rw
+
+
+volumes:
+
+  database_data:

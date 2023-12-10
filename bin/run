@@ -1,0 +1,285 @@
+#!/bin/bash
+set -peu
+
+__kavw_run__copy()
+{
+    src="$1"
+    dst="$2"
+
+    if [ ! -f "$dst" ]; then
+        printf "%s -> %s\n" "$src" "$dst"
+        cp "$src" "$dst"
+    fi
+}
+
+__kavw_run__setup()
+{
+    local cnt=0
+    local proj_dir="$1"
+
+    for i in "$proj_dir"/dc/example*; do
+        # shellcheck disable=SC2001
+        target=$(echo "$i" | sed 's/example//')
+        res=$(__kavw_run__copy "$i" "$target")
+        if [ "$res" !=  "" ]; then
+            cnt=$((cnt+1));
+        fi
+    done
+
+}
+
+__kavw_run__get_dc_env_file()
+{
+    echo "$1/dc/.env"
+}
+
+__kavw_run__get_flag_file()
+{
+    # $1 - proj_dir
+    # #2 - name
+    local dir="$proj_dir/var/flags"
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+    fi
+
+    echo "$proj_dir/var/flags/$2"
+}
+
+__kavw_run__get_flag_default_val()
+{
+    case "$1" in
+    env) echo "prod";;
+      *) echo ""    ;;
+    esac
+}
+
+__kavw_run__get_flag()
+{
+    # $1 - proj_dir
+    # $2 - name
+    local file=
+    file=$(__kavw_run__get_flag_file "$1" "$2")
+
+    if [ ! -f "$file" ]; then
+        local default_val=
+        default_val=$(__kavw_run__get_flag_default_val "$2")
+
+        echo "$default_val" > "$file"
+        echo "$default_val"
+
+    else
+        cat "$file"
+    fi
+}
+
+__kavw_switch_flag()
+{
+    # $1 - proj_dir
+    # $2 - name
+    # $3 - value
+
+    local file=
+    file=$(__kavw_run__get_flag_file  "$1" "$2")
+    echo "$3" > "$file"
+
+    __kavw_run__replace_env_var "$1" APP_"$(echo "$2" | tr '[:lower:]' '[:upper:]')" "$3"
+
+    echo "Current value for \"$2\": $3"
+}
+
+__kavw_run__replace_env_var()
+{
+    local file=
+    file=$(__kavw_run__get_dc_env_file "$1")
+    sed -i -E "s#^$2=.*#$2=$3#" "$file"
+}
+
+__kavw_run__open_url()
+{
+    local os=
+    local msg="Please, try to open $1"
+    os=$(__kavw_run__machine)
+    case "$os" in
+        Linux) xdg-open "$1" 2> /dev/null || printf "\n%s\n\n" "$msg" ;;
+        Mac)   open "$1"     2> /dev/null || printf "\n%s\n\n" "$msg" ;;
+        *)     printf "\n%s\n\n" "$msg" ;;
+    esac
+}
+
+__kavw_run__choose_default_port()
+{
+    local default_port="$2"
+    while :; do
+        local tcp=
+        local udp=
+        tcp=$(timeout 1 bash -c "</dev/tcp/localhost/$default_port" 2> /dev/null || echo "1")
+        udp=$(timeout 1 bash -c "</dev/tcp/localhost/$default_port" 2> /dev/null || echo "1")
+
+        if [ "$tcp" = "1" ] && [ "$udp" = "1" ]; then
+            break
+        else
+            default_port=$((default_port+1))
+            if [ "$default_port" -gt 65535 ]; then
+                printf "Can't choose free port\n" 1>&2
+                exit 1
+            fi
+        fi
+    done
+    echo "$default_port"
+}
+
+__kavw_run__choose_port_interactively()
+{
+    local default_port=
+    default_port=$(__kavw_run__choose_default_port "$1" "$2")
+    while :; do
+        printf "Please, choose a port for the environment variable %s (%s):" "$1" "$default_port"
+        read -r port
+        if [ "$port" = "" ]; then
+            port="$default_port"
+        fi
+
+        err="It should be a positive integer between 1 and 65535"
+        case "$port" in
+            ''|*[!0-9]*) echo "$err" ;;
+            *)
+                if [ "$port" -gt 0 ] && [ "$port" -lt 65535 ]; then
+
+                    tcp=$(timeout 1 bash -c "</dev/tcp/localhost/$port" 2> /dev/null || echo "1")
+                    udp=$(timeout 1 bash -c "</dev/tcp/localhost/$port" 2> /dev/null || echo "1")
+
+                    if [ "$tcp" = "1" ] && [ "$udp" = "1" ]; then
+                        break
+                    else
+                        echo "Port $port is busy"
+                    fi
+                else
+                    echo "$err"
+                fi
+            ;;
+        esac
+    done
+
+    echo "$port"
+}
+
+__kavw_run__machine()
+{
+    local res=
+    local machine=
+    res="$(uname -s)"
+    case "${res}" in
+        Linux*)   machine=Linux;;
+        Darwin*)  machine=Mac;;
+        CYGWIN*)  machine=Cygwin;;
+        MINGW*)   machine=MinGw;;
+        MSYS_NT*) machine=Git;;
+        *)        machine="UNKNOWN: ${res}"
+    esac
+    echo "${machine}"
+}
+
+## cmd handlers
+
+__kavw_run__flag()
+{
+    # $1 - proj_dir
+    # $2 - name
+    # $3 - value - optional
+    if [ "$#" = 1 ]; then
+        echo "TODO: List existing flags"
+        return 0
+    fi
+
+    if [ "$#" = 2 ]; then
+        local res=
+        res=$(__kavw_run__get_flag "$1" "$2")
+        echo "Current value for \"$2\": $res"
+    else
+       __kavw_switch_flag "$1" "$2" "$3"
+    fi
+}
+
+__kavw_run__dc()
+{
+    local proj_dir="$1"
+    shift
+
+    local env_file=
+    env_file=$(__kavw_run__get_dc_env_file "$proj_dir")
+    local compose_files="-f $proj_dir/dc/dc.yml"
+
+    local mode=
+    mode=$(__kavw_run__get_flag "$proj_dir" env)
+    if [ "$mode" != "prod" ]; then
+        dev_file="$proj_dir/dc/dc.dev.yml"
+        compose_files="$compose_files -f $dev_file"
+    fi
+
+    local cmd="docker-compose --env-file $env_file $compose_files $*"
+    echo "$cmd"
+    eval "$cmd"
+}
+
+__kavw_run__default()
+{
+    echo "Running the app ..."
+    __kavw_run__flag "$1" env
+    local res=
+    res=$(__kavw_run__dc "$1" ps | grep -E "^sysio-api") || res=""
+    if [ "$res" != "" ]; then
+        echo "The app is already running"
+        exit 0
+    fi
+
+    local port=
+    port=$(__kavw_run__choose_default_port "HTTP_PORT_NGINX_FPM" 22080)
+    __kavw_run__replace_env_var "$1" "HTTP_PORT_NGINX_FPM" "$port"
+    __kavw_run__dc "$1" build
+    __kavw_run__dc "$1" run --rm php-cli composer install
+    __kavw_run__dc "$1" run --rm php-cli bin/console doctrine:migrations:migrate --no-interaction
+    __kavw_run__dc "$1" up -d
+    echo "Done"
+}
+
+__kavw_run__main()
+{
+    local proj_dir=
+    local script_dir=
+    # shellcheck disable=SC1007
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    proj_dir=$(dirname "$script_dir")
+
+    __kavw_run__setup "$proj_dir"
+
+    if [ "$#" -eq 0 ]; then
+        __kavw_run__default "$proj_dir"
+        exit $?
+    fi
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        env)
+            if [ "$#" = 0 ]; then
+                __kavw_run__flag "$proj_dir" env
+            else
+                __kavw_run__flag "$proj_dir" env "$1"
+            fi
+        ;;
+
+        dev)  __kavw_run__flag "$proj_dir" env dev  ;;
+        prod) __kavw_run__flag "$proj_dir" env prod ;;
+
+        flag) __kavw_run__flag "$proj_dir" "$@" ;;
+
+        help) __kavw_run__dc "$proj_dir" ;;
+
+        cli|sh|shell) __kavw_run__dc "$proj_dir" run --rm php-cli ash;;
+        *) __kavw_run__dc  "$proj_dir" "$cmd" "$@" ;;
+    esac
+    exit $?
+}
+
+__kavw_run__main "$@"
